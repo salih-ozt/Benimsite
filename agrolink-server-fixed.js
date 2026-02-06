@@ -9431,538 +9431,168 @@ function validateMediaFiles(files) {
     return errors;
 }
 
-// Gönderi oluştur (Anket + Konum desteği)
-// ⚡ OPTIMIZED + 🔒 VALIDATED: Kapsamlı validasyon ve hata yakalama
+// Gönderi oluştur - 🔥 TAMAMEN YENİ SADE VERSİYON
 app.post('/api/posts', authenticateToken, checkRestriction, upload.array('media', UPLOAD_CONFIG.maxFilesPerUpload), handleMulterError, async (req, res) => {
     const startTime = Date.now();
     
-    // 🔧 DETAYLI LOG - POST isteği başladı
-    console.log(`📝 POST isteği başladı - User: ${req.user?.id || 'unknown'}`);
-    console.log(`📊 Body keys: ${Object.keys(req.body).join(', ')}`);
-    console.log(`📁 Files: ${req.files ? req.files.length : 0} adet`);
-    
-    if (req.files && req.files.length > 0) {
-        req.files.forEach((file, i) => {
-            console.log(`  📄 [${i}] ${file.originalname} (${file.mimetype}, ${(file.size / 1024 / 1024).toFixed(2)}MB)`);
-        });
-    }
+    console.log(`📝 POST isteği - User: ${req.user?.id || 'unknown'}, Files: ${req.files ? req.files.length : 0}`);
     
     try {
-        // ==================== TEMEL KONTROLLER ====================
+        // Temel kontroller
         if (!isDbReady) {
-            console.error('❌ Veritabanı hazır değil');
-            return res.status(503).json({ 
-                error: 'Veritabanı hazır değil',
-                code: 'DB_NOT_READY',
-                retryAfter: 5
-            });
+            return res.status(503).json({ error: 'Veritabanı hazır değil', code: 'DB_NOT_READY' });
         }
 
         if (!req.user || !req.user.id) {
-            return res.status(401).json({ 
-                error: 'Oturum geçersiz',
-                code: 'INVALID_SESSION'
-            });
+            return res.status(401).json({ error: 'Oturum geçersiz', code: 'INVALID_SESSION' });
         }
 
-        const { 
-            content = '', 
-            mediaType, 
-            isPoll, 
-            pollQuestion, 
-            pollOptions, 
-            allowComments = 'true',
-            latitude,
-            longitude,
-            locationName
-        } = req.body;
-
-        // ==================== VALİDASYONLAR ====================
+        const { content = '', isPoll, pollQuestion, pollOptions, allowComments = 'true', latitude, longitude, locationName } = req.body;
         const isAnketMode = isPoll === 'true' || isPoll === true;
-        const validationErrors = [];
 
-        // 1. İçerik validasyonu
-        const contentErrors = validatePostContent(content, isAnketMode);
-        validationErrors.push(...contentErrors);
-
-        // 2. Boş post kontrolü
+        // Boş post kontrolü
         if (!isAnketMode && !content.trim() && (!req.files || req.files.length === 0)) {
-            validationErrors.push('İçerik veya medya gereklidir');
-        }
-        
-        // 3. Anket + media kontrolü
-        if (isAnketMode && req.files && req.files.length > 0) {
-            // Temp dosyaları temizle
-            for (const f of req.files) {
-                await fs.unlink(f.path).catch(() => {});
-            }
-            validationErrors.push('Anketlerde media eklenemez');
+            return res.status(400).json({ error: 'İçerik veya medya gereklidir' });
         }
 
-        // 4. Anket validasyonu
-        let parsedPollOptions = [];
-        if (isAnketMode) {
-            const pollValidation = validatePollData(pollQuestion, pollOptions);
-            if (pollValidation.errors) {
-                validationErrors.push(...pollValidation.errors);
-            }
-            if (pollValidation.parsedOptions) {
-                parsedPollOptions = pollValidation.parsedOptions;
-            }
-        }
-
-        // 5. Konum validasyonu
-        const locationErrors = validateLocation(latitude, longitude, locationName);
-        validationErrors.push(...locationErrors);
-
-        // 6. Media dosya validasyonu
-        if (req.files && req.files.length > 0) {
-            const mediaErrors = validateMediaFiles(req.files);
-            validationErrors.push(...mediaErrors);
-            
-            // Media hataları varsa dosyaları temizle
-            if (mediaErrors.length > 0) {
-                for (const f of req.files) {
-                    await fs.unlink(f.path).catch(() => {});
-                }
-            }
-        }
-
-        // ==================== HATALARI DÖNDÜR ====================
-        if (validationErrors.length > 0) {
-            console.warn(`⚠️ Post validasyon hatası (${req.user.id}):`, validationErrors);
-            return res.status(400).json({ 
-                error: 'Validasyon hatası',
-                code: 'VALIDATION_ERROR',
-                details: validationErrors
-            });
-        }
-
-        // ==================== KULLANICI KONTROLÜ ====================
+        // Kullanıcı kontrolü
         const user = await db.get('SELECT * FROM users WHERE id = ?', req.user.id);
         if (!user) {
-            // Dosyaları temizle
-            if (req.files) {
-                for (const f of req.files) {
-                    await fs.unlink(f.path).catch(() => {});
-                }
-            }
-            return res.status(404).json({ 
-                error: 'Kullanıcı bulunamadı',
-                code: 'USER_NOT_FOUND'
-            });
+            if (req.files) for (const f of req.files) await fs.unlink(f.path).catch(() => {});
+            return res.status(404).json({ error: 'Kullanıcı bulunamadı' });
         }
 
-        // Kullanıcı aktif mi kontrolü
-        if (!user.isActive) {
-            if (req.files) {
-                for (const f of req.files) {
-                    await fs.unlink(f.path).catch(() => {});
-                }
-            }
-            return res.status(403).json({ 
-                error: 'Hesabınız devre dışı',
-                code: 'ACCOUNT_DISABLED'
-            });
-        }
-
-        // ==================== GÜVENLİK KONTROLÜ 2: Yasaklı kelime kontrolü ====================
-        // İçerik analizi DEVRE DIŞI - kullanıcı deneyimi için kaldırıldı
-        // Yasaklı kelime ve zararlı içerik kontrolü yapılmıyor
-
-        // ==================== GÜVENLİK KONTROLÜ 3: Aynı dosya tekrar yükleme kontrolü ====================
-        // ⚡ HIZLANDIRMA: Hash kontrolü tamamen kaldırıldı - çok yavaşlatıyordu
-        // Güvenlik için rate limiting ve spam protection yeterli
-        
-        let mediaArray = [];
-        let mediaTypes = [];
-        let originalWidths = [];
-        let originalHeights = [];
-        
-        // Arka planda işlenecek videolar için kuyruk
-        const backgroundVideoTasks = [];
+        // Dosya işleme - SIRALI (paralel değil!)
+        let media = null;
+        let finalMediaType = 'text';
+        let width = 1920;
+        let height = 1080;
 
         if (req.files && req.files.length > 0) {
-            console.log(`⚡ ${req.files.length} dosya işleniyor (videolar arka planda)...`);
+            console.log(`📁 ${req.files.length} dosya işleniyor (SIRALI)...`);
             
-            // TÜM DOSYALARI PARALEL İŞLE
-            // ⚡ PARALEL İŞLEME - Her dosya aynı anda işleniyor
-            const processPromises = req.files.map(async (file, index) => {
+            // Sadece ilk dosyayı işle
+            const file = req.files[0];
+            const isVideo = file.mimetype.startsWith('video/');
+            const timestamp = Date.now();
+            
+            if (isVideo) {
+                // VİDEO İŞLEME
+                const filename = `video_${timestamp}_${Math.round(Math.random() * 1E9)}.mp4`;
+                const outputPath = path.join(videosDir, filename);
+                
+                console.log(`🎬 Video: ${file.originalname} -> ${filename}`);
+                
                 try {
-                    const detectedMediaType = file.mimetype.startsWith('video/') ? 'video' : 'image';
-                    const timestamp = Date.now();
-                    
-                    if (detectedMediaType === 'video') {
-                        // 🔧 VİDEO: Geliştirilmiş hata ayıklama ve güvenli işleme
-                        const filename = `video_${timestamp}_${index}_${Math.round(Math.random() * 1E9)}.mp4`;
-                        const outputPath = path.join(videosDir, filename);
-                        
-                        console.log(`🎬 Video işleme başladı: ${file.originalname} -> ${filename}`);
-                        console.log(`📁 Temp path: ${file.path}`);
-                        console.log(`📁 Output path: ${outputPath}`);
-                        console.log(`📊 MIME type: ${file.mimetype}`);
-                        console.log(`📊 Size: ${(file.size / (1024 * 1024)).toFixed(2)} MB`);
-                        
-                        try {
-                            // Temp dosyanın var olduğunu kontrol et
-                            if (!fssync.existsSync(file.path)) {
-                                throw new Error(`Temp video dosyası bulunamadı: ${file.path}`);
-                            }
-                            
-                            // Önce rename dene (aynı disk içinde hızlı)
-                            try {
-                                await fs.rename(file.path, outputPath);
-                                console.log(`✅ Video rename ile taşındı: ${filename}`);
-                            } catch (renameErr) {
-                                console.log(`📝 Rename başarısız, copyFile deneniyor: ${renameErr.message}`);
-                                // Cross-device hata: copyFile + unlink kullan
-                                await fs.copyFile(file.path, outputPath);
-                                console.log(`✅ Video copyFile ile kopyalandı`);
-                                await fs.unlink(file.path);
-                                console.log(`✅ Temp dosya silindi`);
-                            }
-                            
-                            // Dosya var mı ve boyutu uygun mu kontrol et
-                            if (!fssync.existsSync(outputPath)) {
-                                throw new Error('Video dosyası oluşturulamadı - output path mevcut değil');
-                            }
-                            
-                            const outputStats = fssync.statSync(outputPath);
-                            if (outputStats.size === 0) {
-                                throw new Error('Video dosyası boş (0 bytes)');
-                            }
-                            
-                            console.log(`✅ Video başarıyla kaydedildi: ${filename} (${(outputStats.size / (1024 * 1024)).toFixed(2)} MB)`);
-                            
-                            // Video bilgilerini senkron al (daha güvenilir)
-                            let videoInfo = { width: 1280, height: 720 };
-                            try {
-                                videoInfo = await getVideoInfo(outputPath);
-                                console.log(`📹 Video bilgisi alındı: ${videoInfo.width}x${videoInfo.height}, ${videoInfo.duration?.toFixed(2) || '?'}s`);
-                            } catch (infoErr) {
-                                console.warn(`⚠️ Video bilgisi alınamadı, varsayılan değerler kullanılıyor: ${infoErr.message}`);
-                            }
-                            
-                            // Thumbnail oluştur (hata olsa bile devam et)
-                            const thumbPath = path.join(videosDir, `thumb_${filename.replace('.mp4', '.jpg')}`);
-                            createVideoThumbnail(outputPath, thumbPath)
-                                .then(() => console.log(`✅ Thumbnail oluşturuldu: ${thumbPath}`))
-                                .catch(err => console.warn(`⚠️ Thumbnail oluşturulamadı (önemli değil): ${err.message}`));
-                            
-                            return {
-                                success: true,
-                                media: `/uploads/videos/${filename}`,
-                                mediaType: 'video',
-                                width: videoInfo.width || 1280,
-                                height: videoInfo.height || 720
-                            };
-                        } catch (videoError) {
-                            console.error(`❌ Video işleme hatası: ${videoError.message}`);
-                            // Temizlik yap
-                            try { await fs.unlink(file.path); } catch(e) {}
-                            try { if (fssync.existsSync(outputPath)) await fs.unlink(outputPath); } catch(e) {}
-                            throw videoError;
-                        }
-                    } else {
-                        // ⚡ RESİM: Hızlı sıkıştırma - YÜKSEK ÇÖZÜNÜRLÜK DESTEĞİ
-                        const filename = `img_${timestamp}_${index}_${Math.round(Math.random() * 1E9)}.webp`;
-                        const outputPath = path.join(postsDir, filename);
-                        
-                        // 🚀 Dosya boyutunu kontrol et
-                        const stats = fssync.statSync(file.path);
-                        const fileSizeMB = stats.size / (1024 * 1024);
-                        
-                        // 🚀 Yüksek çözünürlük için ayarlar
-                        let targetMaxSize = 4096;  // Varsayılan 4K
-                        let targetQuality = 75;
-                        
-                        if (fileSizeMB > 100) {
-                            // 100MB+ çok yüksek çözünürlük - 4K'ya düşür
-                            targetMaxSize = 3840;
-                            targetQuality = 65;
-                            console.log(`🎯 Yüksek çözünürlüklü görsel: ${fileSizeMB.toFixed(1)}MB → 4K hedef`);
-                        } else if (fileSizeMB > 50) {
-                            // 50-100MB yüksek çözünürlük
-                            targetMaxSize = 4096;
-                            targetQuality = 70;
-                        } else if (fileSizeMB > 20) {
-                            // 20-50MB orta-yüksek çözünürlük
-                            targetMaxSize = 3840;
-                            targetQuality = 75;
-                        }
-                        
-                        // 🚀 Sharp ile yüksek çözünürlük desteği
-                        const image = sharp(file.path, {
-                            failOnError: false,
-                            limitInputPixels: 268402689 * 16,  // 🚀 16x - 32K+ resim desteği
-                            sequentialRead: true
-                        });
-                        
-                        let metadata;
-                        try {
-                            metadata = await image.metadata();
-                            console.log(`📐 Post görsel: ${metadata.width}x${metadata.height} (${fileSizeMB.toFixed(1)}MB)`);
-                        } catch (metaErr) {
-                            console.error('❌ Metadata hatası:', metaErr.message);
-                            metadata = { width: 1920, height: 1080 };
-                        }
-                        
-                        try {
-                            await image
-                                .resize(targetMaxSize, targetMaxSize, { 
-                                    fit: 'inside', 
-                                    withoutEnlargement: true,
-                                    fastShrinkOnLoad: true
-                                })
-                                .webp({ quality: targetQuality, effort: 1 }) // effort: 1 = en hızlı
-                                .toFile(outputPath);
-                        } catch (resizeErr) {
-                            console.error('❌ Resize hatası, orijinal boyutla deneniyor:', resizeErr.message);
-                            // Resize başarısız olursa sadece format dönüşümü yap
-                            await sharp(file.path, {
-                                failOnError: false,
-                                limitInputPixels: 268402689 * 16
-                            })
-                            .webp({ quality: targetQuality })
-                            .toFile(outputPath);
-                        }
-                        
-                        // Temp dosyayı sil
-                        await fs.unlink(file.path).catch(() => {});
-                        
-                        // Çıktı dosyası kontrolü
-                        if (!fssync.existsSync(outputPath)) {
-                            throw new Error('Görsel dosyası oluşturulamadı');
-                        }
-                        
-                        return {
-                            success: true,
-                            media: `/uploads/posts/${filename}`,
-                            mediaType: 'image',
-                            width: metadata.width || 1920,
-                            height: metadata.height || 1080
-                        };
-                    }
-                } catch (error) {
-                    console.error(`Dosya ${index + 1} hatası:`, error.message);
-                    // Temp dosyayı temizle
+                    // Dosyayı taşı
+                    await fs.copyFile(file.path, outputPath);
                     await fs.unlink(file.path).catch(() => {});
-                    return { success: false, error: error.message };
+                    
+                    if (!fssync.existsSync(outputPath)) {
+                        throw new Error('Video kaydedilemedi');
+                    }
+                    
+                    media = `/uploads/videos/${filename}`;
+                    finalMediaType = 'video';
+                    
+                    // Thumbnail oluştur (async, bekleme)
+                    const thumbPath = path.join(videosDir, `thumb_${filename.replace('.mp4', '.jpg')}`);
+                    createVideoThumbnail(outputPath, thumbPath).catch(() => {});
+                    
+                    console.log(`✅ Video kaydedildi: ${filename}`);
+                } catch (err) {
+                    console.error(`❌ Video hatası: ${err.message}`);
+                    throw new Error('Video işlenemedi');
                 }
-            });
-
-            const results = await Promise.all(processPromises);
+            } else {
+                // RESİM İŞLEME - BASİT
+                const filename = `img_${timestamp}_${Math.round(Math.random() * 1E9)}.webp`;
+                const outputPath = path.join(postsDir, filename);
+                
+                console.log(`📷 Resim: ${file.originalname} -> ${filename}`);
+                
+                try {
+                    // Sharp ile basit dönüşüm
+                    await sharp(file.path)
+                        .resize(1920, 1920, { fit: 'inside', withoutEnlargement: true })
+                        .webp({ quality: 80 })
+                        .toFile(outputPath);
+                    
+                    await fs.unlink(file.path).catch(() => {});
+                    
+                    media = `/uploads/posts/${filename}`;
+                    finalMediaType = 'image';
+                    
+                    console.log(`✅ Resim kaydedildi: ${filename}`);
+                } catch (err) {
+                    console.error(`❌ Resim hatası: ${err.message}`);
+                    // Sharp başarısız olursa direkt kopyala
+                    try {
+                        await fs.copyFile(file.path, outputPath);
+                        await fs.unlink(file.path).catch(() => {});
+                        media = `/uploads/posts/${filename}`;
+                        finalMediaType = 'image';
+                        console.log(`✅ Resim direkt kopyalandı`);
+                    } catch (copyErr) {
+                        throw new Error('Resim işlenemedi');
+                    }
+                }
+            }
             
-            for (const result of results) {
-                if (result.success) {
-                    mediaArray.push(result.media);
-                    mediaTypes.push(result.mediaType);
-                    originalWidths.push(result.width);
-                    originalHeights.push(result.height);
-                }
+            // Diğer dosyaları temizle
+            for (let i = 1; i < req.files.length; i++) {
+                await fs.unlink(req.files[i].path).catch(() => {});
             }
         }
 
-        const media = mediaArray.length > 0 ? mediaArray[0] : null;
-        const detectedMediaType = mediaTypes.length > 0 ? mediaTypes[0] : null;
-        const originalWidth = originalWidths.length > 0 ? originalWidths[0] : null;
-        const originalHeight = originalHeights.length > 0 ? originalHeights[0] : null;
-
+        // Veritabanına kaydet
         const postId = uuidv4();
         const now = new Date().toISOString();
-        
-        // 🔧 DEBUG: Değerleri logla
-        console.log(`🔍 DEBUG - Post verileri hazırlanıyor:`);
-        console.log(`   postId: ${postId}`);
-        console.log(`   userId: ${req.user.id}`);
-        console.log(`   username: ${user.username}`);
-        console.log(`   isAnketMode: ${isAnketMode}`);
-        console.log(`   media: ${media}`);
-        console.log(`   mediaType param: ${mediaType}`);
-        console.log(`   detectedMediaType: ${detectedMediaType}`);
-        
-        // 🔧 KRİTİK: mediaType null/undefined kontrolü
-        const finalMediaType = isAnketMode ? 'poll' : (mediaType || detectedMediaType || 'image');
-        console.log(`   final mediaType: ${finalMediaType}`);
-        
-        if (!finalMediaType) {
-            console.error(`❌ KRİTİK HATA: mediaType null/undefined!`);
-            throw new Error('Media tipi belirlenemedi');
-        }
-        
-        // Konum verilerini hazırla
-        const lat = latitude ? parseFloat(latitude) : null;
-        const lng = longitude ? parseFloat(longitude) : null;
-        const locName = locationName || null;
-        
-        // Anket için içerik
         const postContent = isAnketMode ? (pollQuestion || '').substring(0, 5000) : content.substring(0, 5000);
-        const commentsAllowed = allowComments === 'true' || allowComments === true ? 1 : 0;
         
-        // 🔧 DEBUG: Anket verilerini kontrol et
         let pollOptionsJson = null;
-        if (isAnketMode) {
+        if (isAnketMode && pollOptions) {
             try {
-                // 🔧 parsedPollOptions null/undefined kontrolü
-                if (!parsedPollOptions || !Array.isArray(parsedPollOptions)) {
-                    console.error(`❌ parsedPollOptions geçersiz: ${typeof parsedPollOptions}`);
-                    pollOptionsJson = '[]';
-                } else {
-                    pollOptionsJson = JSON.stringify(parsedPollOptions.map((opt, i) => ({ id: i, text: opt, votes: 0 })));
-                    console.log(`🔍 DEBUG - pollOptionsJson: ${pollOptionsJson}`);
+                const opts = typeof pollOptions === 'string' ? JSON.parse(pollOptions) : pollOptions;
+                if (Array.isArray(opts)) {
+                    pollOptionsJson = JSON.stringify(opts.map((opt, i) => ({ id: i, text: opt, votes: 0 })));
                 }
-            } catch (pollErr) {
-                console.error(`❌ pollOptions JSON hatası: ${pollErr.message}`);
+            } catch (e) {
                 pollOptionsJson = '[]';
             }
         }
-        
-        // 🔧 originalWidth/originalHeight null kontrolü
-        const safeOriginalWidth = originalWidth || 1920;
-        const safeOriginalHeight = originalHeight || 1080;
-        console.log(`🔍 DEBUG - safe dimensions: ${safeOriginalWidth}x${safeOriginalHeight}`);
 
-        console.log(`💾 Veritabanına kayıt başlıyor...`);
-        
-        try {
-            await db.run(
-                `INSERT INTO posts (id, userId, username, content, media, mediaType, originalWidth, originalHeight, isPoll, pollQuestion, pollOptions, allowComments, latitude, longitude, locationName, createdAt, updatedAt) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                postId, req.user.id, user.username, postContent, media, 
-                finalMediaType, safeOriginalWidth, safeOriginalHeight,
-                isAnketMode ? 1 : 0, 
-                isAnketMode ? pollQuestion : null,
-                pollOptionsJson,
-                commentsAllowed, lat, lng, locName, now, now
-            );
-            console.log(`✅ Veritabanı kaydı başarılı: ${postId}`);
-        } catch (dbErr) {
-            console.error(`❌❌❌ VERİTABANI KAYIT HATASI ❌❌❌`);
-            console.error(`   Hata: ${dbErr.message}`);
-            console.error(`   Code: ${dbErr.code}`);
-            console.error(`   Stack: ${dbErr.stack}`);
-            throw dbErr;
-        }
-        
-        // Anket oluşturulduysa loglama
-        if (isAnketMode) {
-            console.log(`📊 Anket oluşturuldu: ${pollQuestion} - ${parsedPollOptions.length} şık - Kullanıcı: ${user.username}`);
-        }
-        
-        // Konum eklendiyse loglama
-        if (lat && lng) {
-            console.log(`📍 Konum eklendi: ${locName || `${lat}, ${lng}`} - Kullanıcı: ${user.username}`);
-        }
+        console.log(`💾 DB kayıt: ${postId}, type: ${isAnketMode ? 'poll' : finalMediaType}`);
 
-        // Video info arka planda kaydet (API yanıtını geciktirmesin)
-        if (detectedMediaType === 'video' && media && mediaArray.length > 0) {
-            setImmediate(async () => {
-                try {
-                    const firstResult = await getVideoInfo(path.join(videosDir, path.basename(media)));
-                    const videoInfoId = uuidv4();
+        await db.run(
+            `INSERT INTO posts (id, userId, username, content, media, mediaType, originalWidth, originalHeight, isPoll, pollQuestion, pollOptions, allowComments, latitude, longitude, locationName, createdAt, updatedAt) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            postId, req.user.id, user.username, postContent, media, 
+            isAnketMode ? 'poll' : finalMediaType, width, height,
+            isAnketMode ? 1 : 0, 
+            isAnketMode ? pollQuestion : null,
+            pollOptionsJson,
+            allowComments === 'true' ? 1 : 0,
+            latitude ? parseFloat(latitude) : null,
+            longitude ? parseFloat(longitude) : null,
+            locationName || null,
+            now, now
+        );
 
-                    await db.run(
-                        `INSERT INTO video_info (id, postId, duration, width, height, aspectRatio, bitrate, codec, fileSize, createdAt) 
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                        videoInfoId, postId, firstResult.duration, firstResult.width, firstResult.height, 
-                        firstResult.aspectRatio, firstResult.bitrate, firstResult.codec, firstResult.fileSize, now
-                    );
-                } catch (videoInfoError) {
-                    console.error('Video bilgisi kaydetme hatası:', videoInfoError);
-                }
-            });
-        }
+        console.log(`✅ DB kayıt başarılı: ${postId}`);
 
-        // Hashtag işleme - toplu (bulk) işleme ile optimize edildi
-        if (content) {
-            let extractedHashtags = [];
-            try {
-                extractedHashtags = await extractHashtags(content);
-                console.log(`🔍 ${extractedHashtags.length} hashtag bulundu`);
-            } catch (hashtagErr) {
-                console.error(`⚠️ Hashtag çıkarma hatası: ${hashtagErr.message}`);
-                extractedHashtags = [];
-            }
+        // Post'u getir
+        const post = await db.get(
+            `SELECT p.*, u.profilePic as userProfilePic, u.name as userName, u.username as userUsername, u.isVerified as userVerified, u.userType as userType
+             FROM posts p JOIN users u ON p.userId = u.id WHERE p.id = ?`,
+            postId
+        );
 
-            if (extractedHashtags && extractedHashtags.length > 0) {
-                setImmediate(async () => {
-                    try {
-                        // Tüm hashtag'leri tek sorguda al
-                        const placeholders = extractedHashtags.map(() => '?').join(',');
-                        const existingHashtags = await db.all(
-                            `SELECT id, tag FROM hashtags WHERE tag IN (${placeholders})`,
-                            ...extractedHashtags
-                        );
-
-                        const existingMap = new Map(existingHashtags.map(h => [h.tag, h.id]));
-                        const newHashtags = extractedHashtags.filter(tag => !existingMap.has(tag));
-
-                        // Yeni hashtag'leri toplu ekle
-                        for (const tag of newHashtags) {
-                            const hashtagId = uuidv4();
-                            await db.run(
-                                'INSERT INTO hashtags (id, tag, createdAt) VALUES (?, ?, ?)',
-                                hashtagId, tag, now
-                            );
-                            existingMap.set(tag, hashtagId);
-                        }
-
-                        // Mevcut hashtag'lerin sayacını toplu güncelle
-                        if (existingHashtags.length > 0) {
-                            const existingIds = existingHashtags.map(h => h.id);
-                            const idPlaceholders = existingIds.map(() => '?').join(',');
-                            await db.run(
-                                `UPDATE hashtags SET postCount = postCount + 1 WHERE id IN (${idPlaceholders})`,
-                                ...existingIds
-                            );
-                        }
-
-                        // Post-hashtag ilişkilerini toplu ekle
-                        for (const tag of extractedHashtags) {
-                            await db.run(
-                                'INSERT INTO post_hashtags (id, postId, hashtagId) VALUES (?, ?, ?)',
-                                uuidv4(), postId, existingMap.get(tag)
-                            );
-                        }
-                    } catch (tagError) {
-                        console.error('Hashtag işleme hatası:', tagError);
-                    }
-                });
-            }
-        }
-
-        console.log(`🔍 Post sorgusu yapılıyor: ${postId}`);
-        
-        let post;
-        try {
-            post = await db.get(
-                `SELECT p.*,
-                 u.profilePic as userProfilePic,
-                 u.name as userName,
-                 u.username as userUsername,
-                 u.isVerified as userVerified,
-                 u.userType as userType
-                 FROM posts p
-                 JOIN users u ON p.userId = u.id
-                 WHERE p.id = ?`,
-                postId
-            );
-            console.log(`✅ Post sorgusu başarılı: ${post ? 'bulundu' : 'bulunamadı'}`);
-        } catch (postQueryErr) {
-            console.error(`❌ Post sorgu hatası: ${postQueryErr.message}`);
-            throw postQueryErr;
-        }
-        
-        // 🔧 Post null kontrolü
         if (!post) {
-            console.error(`❌ KRİTİK HATA: Post sorgusu sonucu null! postId: ${postId}`);
-            throw new Error('Post oluşturuldu ama sorgulanamadı');
+            throw new Error('Post oluşturuldu ama getirilemedi');
         }
-        
-        console.log(`🔍 DEBUG - post bulundu, media kontrolü yapılıyor...`);
-        console.log(`   post.media: ${post.media}`);
-        console.log(`   post.mediaType: ${post.mediaType}`);
-        
+
+        // Media URL'leri ekle
         if (post.media) {
             const filename = path.basename(post.media);
             if (post.mediaType === 'video') {
@@ -9973,128 +9603,36 @@ app.post('/api/posts', authenticateToken, checkRestriction, upload.array('media'
             }
         }
 
-        if (redisClient) {
-            const keys = await redisClient.keys('feed:*').catch(() => []);
-            if (keys.length > 0) {
-                await redisClient.del(keys).catch(() => {});
-            }
-        }
-
+        // Socket emit
         io.emit('new_post', { 
             post: { ...post, username: user.username, name: user.name },
-            userId: req.user.id,
-            username: user.username
+            userId: req.user.id 
         });
 
-        // Takipçi bildirimleri - arka planda gönder (API yanıtını geciktirmesin)
-        setImmediate(async () => {
-            try {
-                const followers = await db.all(
-                    'SELECT followerId FROM follows WHERE followingId = ?',
-                    req.user.id
-                );
-
-                // Bildirimleri paralel gönder
-                const notificationPromises = followers.map(follower => 
-                    createNotification(
-                        follower.followerId,
-                        'post',
-                        `${user.username} yeni bir gönderi paylaştı`,
-                        { postId, userId: req.user.id }
-                    ).catch(err => console.error('Bildirim hatası:', err))
-                );
-
-                await Promise.all(notificationPromises);
-            } catch (notifError) {
-                console.error('Takipçi bildirim hatası:', notifError);
-            }
-        });
-
-        // ==================== BAŞARILI YANIT ====================
         const processingTime = Date.now() - startTime;
-        console.log(`✅ Post oluşturuldu: ${postId} (${processingTime}ms) - User: ${user.username}`);
+        console.log(`✅ POST BAŞARILI: ${postId} (${processingTime}ms)`);
 
         res.status(201).json({ 
             success: true,
             message: 'Gönderi oluşturuldu', 
             post,
-            mediaCount: mediaArray.length,
             processingTime: `${processingTime}ms`
         });
 
     } catch (error) {
-        // ==================== HATA YAKALAMA - GELİŞTİRİLMİŞ ====================
         const processingTime = Date.now() - startTime;
-        console.error(`❌❌❌ GÖNDERİ OLUŞTURMA HATASI ❌❌❌`);
-        console.error(`👤 User: ${req.user?.id || 'unknown'}`);
-        console.error(`⏱️ Süre: ${processingTime}ms`);
-        console.error(`📛 Hata: ${error.message}`);
-        console.error(`🔢 Code: ${error.code || 'N/A'}`);
-        console.error(`📚 Stack:`, error.stack);
+        console.error(`❌ POST HATASI: ${error.message}`);
         
         // Dosyaları temizle
         if (req.files) {
-            console.log(`🧹 Temizleniyor: ${req.files.length} dosya`);
             for (const file of req.files) {
-                try {
-                    if (fssync.existsSync(file.path)) {
-                        await fs.unlink(file.path);
-                        console.log(`  ✅ Silindi: ${file.path}`);
-                    }
-                } catch (cleanupErr) {
-                    console.error(`  ❌ Silinemedi: ${file.path}`, cleanupErr.message);
-                }
+                await fs.unlink(file.path).catch(() => {});
             }
         }
         
-        // Hata tipine göre yanıt
-        if (error.code === 'SQLITE_CONSTRAINT') {
-            return res.status(409).json({ 
-                error: 'Veri çakışması oluştu',
-                code: 'CONSTRAINT_ERROR',
-                details: error.message
-            });
-        }
-        
-        if (error.code === 'SQLITE_BUSY') {
-            return res.status(503).json({ 
-                error: 'Veritabanı meşgul, lütfen tekrar deneyin',
-                code: 'DB_BUSY',
-                retryAfter: 2
-            });
-        }
-        
-        if (error.code === 'SQLITE_MISUSE') {
-            return res.status(500).json({ 
-                error: 'Veritabanı hatası',
-                code: 'DB_MISUSE',
-                message: 'Lütfen daha sonra tekrar deneyin'
-            });
-        }
-        
-        // Genel hata - DETAYLI HATA MESAJI
-        console.error(`📤 Hata response gönderiliyor...`);
-        
-        // Hata tipine göre kullanıcıya mesaj
-        let userMessage = 'Gönderi oluşturulurken bir hata oluştu. Lütfen tekrar deneyin.';
-        
-        if (error.message && error.message.includes('temp')) {
-            userMessage = 'Dosya işleme hatası. Lütfen daha küçük bir dosya deneyin.';
-        } else if (error.message && error.message.includes('SQLITE')) {
-            userMessage = 'Veritabanı hatası. Lütfen daha sonra tekrar deneyin.';
-        } else if (error.message && error.message.includes('sharp')) {
-            userMessage = 'Görsel işleme hatası. Lütfen farklı bir görsel deneyin.';
-        } else if (error.message && error.message.includes('video')) {
-            userMessage = 'Video işleme hatası. Lütfen farklı bir video deneyin.';
-        }
-        
         res.status(500).json({ 
-            error: userMessage,
-            code: 'INTERNAL_ERROR',
-            debug: process.env.NODE_ENV === 'development' ? {
-                message: error.message,
-                stack: error.stack?.split('\n')[0]
-            } : undefined
+            error: 'Gönderi oluşturulamadı: ' + error.message,
+            code: 'INTERNAL_ERROR'
         });
     }
 });
