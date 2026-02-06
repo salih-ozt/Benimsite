@@ -9771,6 +9771,25 @@ app.post('/api/posts', authenticateToken, checkRestriction, upload.array('media'
         const postId = uuidv4();
         const now = new Date().toISOString();
         
+        // 🔧 DEBUG: Değerleri logla
+        console.log(`🔍 DEBUG - Post verileri hazırlanıyor:`);
+        console.log(`   postId: ${postId}`);
+        console.log(`   userId: ${req.user.id}`);
+        console.log(`   username: ${user.username}`);
+        console.log(`   isAnketMode: ${isAnketMode}`);
+        console.log(`   media: ${media}`);
+        console.log(`   mediaType param: ${mediaType}`);
+        console.log(`   detectedMediaType: ${detectedMediaType}`);
+        
+        // 🔧 KRİTİK: mediaType null/undefined kontrolü
+        const finalMediaType = isAnketMode ? 'poll' : (mediaType || detectedMediaType || 'image');
+        console.log(`   final mediaType: ${finalMediaType}`);
+        
+        if (!finalMediaType) {
+            console.error(`❌ KRİTİK HATA: mediaType null/undefined!`);
+            throw new Error('Media tipi belirlenemedi');
+        }
+        
         // Konum verilerini hazırla
         const lat = latitude ? parseFloat(latitude) : null;
         const lng = longitude ? parseFloat(longitude) : null;
@@ -9779,17 +9798,51 @@ app.post('/api/posts', authenticateToken, checkRestriction, upload.array('media'
         // Anket için içerik
         const postContent = isAnketMode ? (pollQuestion || '').substring(0, 5000) : content.substring(0, 5000);
         const commentsAllowed = allowComments === 'true' || allowComments === true ? 1 : 0;
+        
+        // 🔧 DEBUG: Anket verilerini kontrol et
+        let pollOptionsJson = null;
+        if (isAnketMode) {
+            try {
+                // 🔧 parsedPollOptions null/undefined kontrolü
+                if (!parsedPollOptions || !Array.isArray(parsedPollOptions)) {
+                    console.error(`❌ parsedPollOptions geçersiz: ${typeof parsedPollOptions}`);
+                    pollOptionsJson = '[]';
+                } else {
+                    pollOptionsJson = JSON.stringify(parsedPollOptions.map((opt, i) => ({ id: i, text: opt, votes: 0 })));
+                    console.log(`🔍 DEBUG - pollOptionsJson: ${pollOptionsJson}`);
+                }
+            } catch (pollErr) {
+                console.error(`❌ pollOptions JSON hatası: ${pollErr.message}`);
+                pollOptionsJson = '[]';
+            }
+        }
+        
+        // 🔧 originalWidth/originalHeight null kontrolü
+        const safeOriginalWidth = originalWidth || 1920;
+        const safeOriginalHeight = originalHeight || 1080;
+        console.log(`🔍 DEBUG - safe dimensions: ${safeOriginalWidth}x${safeOriginalHeight}`);
 
-        await db.run(
-            `INSERT INTO posts (id, userId, username, content, media, mediaType, originalWidth, originalHeight, isPoll, pollQuestion, pollOptions, allowComments, latitude, longitude, locationName, createdAt, updatedAt) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            postId, req.user.id, user.username, postContent, media, 
-            isAnketMode ? 'poll' : (mediaType || detectedMediaType), originalWidth, originalHeight,
-            isAnketMode ? 1 : 0, 
-            isAnketMode ? pollQuestion : null,
-            isAnketMode ? JSON.stringify(parsedPollOptions.map((opt, i) => ({ id: i, text: opt, votes: 0 }))) : null,
-            commentsAllowed, lat, lng, locName, now, now
-        );
+        console.log(`💾 Veritabanına kayıt başlıyor...`);
+        
+        try {
+            await db.run(
+                `INSERT INTO posts (id, userId, username, content, media, mediaType, originalWidth, originalHeight, isPoll, pollQuestion, pollOptions, allowComments, latitude, longitude, locationName, createdAt, updatedAt) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                postId, req.user.id, user.username, postContent, media, 
+                finalMediaType, safeOriginalWidth, safeOriginalHeight,
+                isAnketMode ? 1 : 0, 
+                isAnketMode ? pollQuestion : null,
+                pollOptionsJson,
+                commentsAllowed, lat, lng, locName, now, now
+            );
+            console.log(`✅ Veritabanı kaydı başarılı: ${postId}`);
+        } catch (dbErr) {
+            console.error(`❌❌❌ VERİTABANI KAYIT HATASI ❌❌❌`);
+            console.error(`   Hata: ${dbErr.message}`);
+            console.error(`   Code: ${dbErr.code}`);
+            console.error(`   Stack: ${dbErr.stack}`);
+            throw dbErr;
+        }
         
         // Anket oluşturulduysa loglama
         if (isAnketMode) {
@@ -9822,9 +9875,16 @@ app.post('/api/posts', authenticateToken, checkRestriction, upload.array('media'
 
         // Hashtag işleme - toplu (bulk) işleme ile optimize edildi
         if (content) {
-            const extractedHashtags = await extractHashtags(content);
+            let extractedHashtags = [];
+            try {
+                extractedHashtags = await extractHashtags(content);
+                console.log(`🔍 ${extractedHashtags.length} hashtag bulundu`);
+            } catch (hashtagErr) {
+                console.error(`⚠️ Hashtag çıkarma hatası: ${hashtagErr.message}`);
+                extractedHashtags = [];
+            }
 
-            if (extractedHashtags.length > 0) {
+            if (extractedHashtags && extractedHashtags.length > 0) {
                 setImmediate(async () => {
                     try {
                         // Tüm hashtag'leri tek sorguda al
@@ -9871,18 +9931,37 @@ app.post('/api/posts', authenticateToken, checkRestriction, upload.array('media'
             }
         }
 
-                const post = await db.get(
-            `SELECT p.*,
-             u.profilePic as userProfilePic,
-             u.name as userName,
-             u.username as userUsername,
-             u.isVerified as userVerified,
-             u.userType as userType
-             FROM posts p
-             JOIN users u ON p.userId = u.id
-             WHERE p.id = ?`,
-            postId
-        );
+        console.log(`🔍 Post sorgusu yapılıyor: ${postId}`);
+        
+        let post;
+        try {
+            post = await db.get(
+                `SELECT p.*,
+                 u.profilePic as userProfilePic,
+                 u.name as userName,
+                 u.username as userUsername,
+                 u.isVerified as userVerified,
+                 u.userType as userType
+                 FROM posts p
+                 JOIN users u ON p.userId = u.id
+                 WHERE p.id = ?`,
+                postId
+            );
+            console.log(`✅ Post sorgusu başarılı: ${post ? 'bulundu' : 'bulunamadı'}`);
+        } catch (postQueryErr) {
+            console.error(`❌ Post sorgu hatası: ${postQueryErr.message}`);
+            throw postQueryErr;
+        }
+        
+        // 🔧 Post null kontrolü
+        if (!post) {
+            console.error(`❌ KRİTİK HATA: Post sorgusu sonucu null! postId: ${postId}`);
+            throw new Error('Post oluşturuldu ama sorgulanamadı');
+        }
+        
+        console.log(`🔍 DEBUG - post bulundu, media kontrolü yapılıyor...`);
+        console.log(`   post.media: ${post.media}`);
+        console.log(`   post.mediaType: ${post.mediaType}`);
         
         if (post.media) {
             const filename = path.basename(post.media);
@@ -9993,11 +10072,29 @@ app.post('/api/posts', authenticateToken, checkRestriction, upload.array('media'
             });
         }
         
-        // Genel hata
+        // Genel hata - DETAYLI HATA MESAJI
+        console.error(`📤 Hata response gönderiliyor...`);
+        
+        // Hata tipine göre kullanıcıya mesaj
+        let userMessage = 'Gönderi oluşturulurken bir hata oluştu. Lütfen tekrar deneyin.';
+        
+        if (error.message && error.message.includes('temp')) {
+            userMessage = 'Dosya işleme hatası. Lütfen daha küçük bir dosya deneyin.';
+        } else if (error.message && error.message.includes('SQLITE')) {
+            userMessage = 'Veritabanı hatası. Lütfen daha sonra tekrar deneyin.';
+        } else if (error.message && error.message.includes('sharp')) {
+            userMessage = 'Görsel işleme hatası. Lütfen farklı bir görsel deneyin.';
+        } else if (error.message && error.message.includes('video')) {
+            userMessage = 'Video işleme hatası. Lütfen farklı bir video deneyin.';
+        }
+        
         res.status(500).json({ 
-            error: 'Gönderi oluşturulamadı',
+            error: userMessage,
             code: 'INTERNAL_ERROR',
-            message: process.env.NODE_ENV === 'development' ? error.message : 'Bir hata oluştu, lütfen tekrar deneyin'
+            debug: process.env.NODE_ENV === 'development' ? {
+                message: error.message,
+                stack: error.stack?.split('\n')[0]
+            } : undefined
         });
     }
 });
